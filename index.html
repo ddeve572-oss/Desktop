@@ -10,5 +10,363 @@
     <img width="300" src="dino.png" alt="">
     <p>you can't play this game without internet in this website</p>
     <p>this is  my first website</p>
+    <!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Offline Dino Runner</title>
+<style>
+  :root{
+    --bg:#f7f7f7;
+    --ground:#666;
+    --dino:#222;
+    --ob:#1b5e20;
+    --accent:#ff6f61;
+    font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+  }
+  html,body{height:100%;margin:0;background:linear-gradient(#fff,#f1f1f1);}
+  .wrap{min-height:100%;display:flex;align-items:center;justify-content:center;flex-direction:column;padding:20px;gap:18px}
+  h1{margin:0;font-size:20px;color:#333}
+  .info{color:#666;font-size:13px}
+  canvas{background:var(--bg);border-radius:12px;box-shadow:0 12px 30px rgba(20,20,20,0.08);touch-action:none}
+  .controls{display:flex;gap:8px;align-items:center}
+  button{background:#111;color:#fff;border:0;padding:8px 12px;border-radius:8px;cursor:pointer}
+  .small{font-size:13px;padding:6px 10px}
+  footer{font-size:12px;color:#777;margin-top:8px}
+  .hud{display:flex;gap:12px;align-items:center;font-weight:600;color:#222}
+  .muted{font-weight:400;color:#666;font-size:12px}
+  @media (max-width:520px){
+    canvas{width:92vw;height:46vw}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Offline Dino Runner</h1>
+  <div class="info">Use <strong>Space</strong> or <strong>Up</strong> to jump. Tap the screen to jump on mobile. Avoid cacti — survive as long as you can!</div>
+
+  <canvas id="game" width="900" height="260" aria-label="Dino runner game"></canvas>
+
+  <div class="controls">
+    <div class="hud">
+      <div id="score">Score: 0</div>
+      <div id="high" class="muted">High: 0</div>
+    </div>
+    <div style="flex:1"></div>
+    <button id="toggle" class="small">Pause</button>
+    <button id="restart" class="small">Restart</button>
+  </div>
+
+  <footer>Built with ♥ — single HTML file. Local high score saved in your browser.</footer>
+</div>
+
+<script>
+(() => {
+  // Canvas and scaling
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+
+  // Game constants
+  const W = canvas.width;
+  const H = canvas.height;
+  const GROUND_Y = H - 48;
+  const GRAVITY = 0.85;
+  const JUMP_V = -14;
+  const MAX_OB = 4; // maximum simultaneous obstacles
+  const initialSpeed = 6;
+
+  // DOM
+  const scoreEl = document.getElementById('score');
+  const highEl = document.getElementById('high');
+  const restartBtn = document.getElementById('restart');
+  const toggleBtn = document.getElementById('toggle');
+
+  // Game state
+  let dino = {
+    x: 46,
+    y: GROUND_Y - 44,
+    w: 44,
+    h: 44,
+    vy: 0,
+    onGround: true,
+    blinkTimer: 0
+  };
+
+  let obstacles = [];
+  let speed = initialSpeed;
+  let distance = 0;
+  let score = 0;
+  let high = Number(localStorage.getItem('dino_high') || 0);
+  let running = true;
+  let playing = true; // false when game over
+  let lastSpawn = 0;
+  let spawnInterval = 1400; // ms
+  let lastTime = performance.now();
+
+  highEl.textContent = 'High: ' + high;
+
+  // Simple random helper
+  const rand = (min, max) => Math.random() * (max - min) + min | 0;
+
+  // Input
+  function jump() {
+    if (!playing) return start();
+    if (dino.onGround) {
+      dino.vy = JUMP_V;
+      dino.onGround = false;
+    } else if (dino.vy > 0) {
+      // allow small double-bounce
+      dino.vy = -8;
+    }
+  }
+
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space' || e.code === 'ArrowUp') { e.preventDefault(); jump(); }
+    if (e.code === 'KeyP') togglePause();
+  });
+  canvas.addEventListener('touchstart', (e) => { e.preventDefault(); jump(); }, {passive:false});
+  canvas.addEventListener('mousedown', () => jump());
+
+  restartBtn.addEventListener('click', () => start(true));
+  toggleBtn.addEventListener('click', togglePause);
+
+  function togglePause(){
+    running = !running;
+    toggleBtn.textContent = running ? 'Pause' : 'Resume';
+    if (running) {
+      lastTime = performance.now();
+      loop(lastTime);
+    }
+  }
+
+  // Start / reset
+  function start(force=false){
+    if (force || !playing) {
+      dino.y = GROUND_Y - dino.h;
+      dino.vy = 0;
+      dino.onGround = true;
+      obstacles = [];
+      speed = initialSpeed;
+      distance = 0;
+      score = 0;
+      spawnInterval = 1400;
+      lastSpawn = performance.now();
+      playing = true;
+      running = true;
+      toggleBtn.textContent = 'Pause';
+      lastTime = performance.now();
+      loop(lastTime);
+    }
+  }
+
+  // Create obstacles (simple cactus rectangles with variable width)
+  function spawnObstacle(){
+    const w = rand(14, 28);
+    const h = rand(26, 52);
+    const gapFromRight = rand(0, 60);
+    obstacles.push({
+      x: W + gapFromRight,
+      y: GROUND_Y - h,
+      w, h,
+      passed: false,
+      type: Math.random() < 0.25 ? 'tall' : 'cactus'
+    });
+  }
+
+  // Collision test (AABB)
+  function collides(a, b){
+    return a.x < b.x + b.w &&
+           a.x + a.w > b.x &&
+           a.y < b.y + b.h &&
+           a.y + a.h > b.y;
+  }
+
+  // Draw functions
+  function drawGround(){
+    // ground line
+    ctx.fillStyle = '#ddd';
+    ctx.fillRect(0, GROUND_Y + dpr*0.5, W, H - GROUND_Y);
+    // dashed ground detail
+    ctx.strokeStyle = '#e0e0e0';
+    ctx.beginPath();
+    for (let x = -((distance*1.2)%40); x < W+40; x += 40){
+      ctx.moveTo(x, GROUND_Y + 6);
+      ctx.lineTo(x+20, GROUND_Y + 6);
+    }
+    ctx.stroke();
+  }
+
+  function drawDino(t){
+    // body
+    ctx.save();
+    ctx.translate(dino.x + dino.w/2, dino.y + dino.h/2);
+    let squish = 1 - Math.min(Math.abs(dino.vy)/40, 0.08);
+    ctx.scale(1, squish);
+    ctx.fillStyle = '#222';
+    ctx.fillRect(-dino.w/2, -dino.h/2, dino.w, dino.h);
+    // eye
+    ctx.fillStyle = '#fff';
+    const eyeX = dino.w/4;
+    const eyeY = -dino.h/6;
+    const blink = (Math.floor(t/400) % 20) === 0 && dino.onGround ? 1 : 0;
+    if (!blink) ctx.fillRect(eyeX, eyeY, 6, 6);
+    // leg - simple running
+    ctx.fillStyle = '#111';
+    const legOffset = dino.onGround ? Math.sin(t/90)*6 : 0;
+    ctx.fillRect(-dino.w/2 + 6, dino.h/2 - 8 + legOffset, 8, 8);
+    ctx.fillRect( dino.w/2 - 14, dino.h/2 - 8 - legOffset, 8, 8);
+    ctx.restore();
+  }
+
+  function drawObstacle(ob){
+    ctx.fillStyle = '#1b5e20';
+    // cactus body
+    ctx.fillRect(ob.x, ob.y, ob.w, ob.h);
+    // simple arms for cactus-type
+    if (ob.type === 'cactus') {
+      ctx.fillRect(ob.x - ob.w*0.5, ob.y + ob.h*0.2, ob.w*0.5, Math.max(4, ob.h*0.12));
+      ctx.fillRect(ob.x + ob.w, ob.y + ob.h*0.25, ob.w*0.5, Math.max(4, ob.h*0.1));
+    } else {
+      // tall
+      ctx.fillStyle = '#196f3d';
+      ctx.fillRect(ob.x, ob.y - Math.min(12, ob.h*0.2), ob.w, Math.min(12, ob.h*0.2));
+    }
+  }
+
+  // pixel ratio scaling for crispness
+  let dpr = window.devicePixelRatio || 1;
+  function fixDPR(){
+    dpr = window.devicePixelRatio || 1;
+    const cssW = canvas.clientWidth || W;
+    const cssH = canvas.clientHeight || H;
+    canvas.width = (cssW) * dpr;
+    canvas.height = (cssH) * dpr;
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+  }
+  fixDPR();
+  window.addEventListener('resize', fixDPR);
+
+  // Main loop
+  function loop(now){
+    if (!running) return;
+    const dt = Math.min(40, now - lastTime);
+    lastTime = now;
+
+    // Update only if playing
+    if (playing) {
+      // spawn logic
+      if (now - lastSpawn > spawnInterval) {
+        spawnObstacle();
+        lastSpawn = now;
+        // slowly increase difficulty
+        spawnInterval = Math.max(700, spawnInterval - rand(8, 20));
+      }
+
+      // move obstacles
+      for (let ob of obstacles) {
+        ob.x -= speed * (dt/16);
+      }
+      // remove offscreen
+      obstacles = obstacles.filter(ob => ob.x + ob.w > -40);
+
+      // dino physics
+      dino.vy += GRAVITY * (dt/16);
+      dino.y += dino.vy * (dt/16);
+      if (dino.y + dino.h >= GROUND_Y) {
+        dino.y = GROUND_Y - dino.h;
+        dino.vy = 0;
+        dino.onGround = true;
+      }
+
+      // collisions
+      for (let ob of obstacles) {
+        if (collides(dino, ob)) {
+          // game over
+          playing = false;
+          running = false;
+          if (score > high) {
+            high = score;
+            localStorage.setItem('dino_high', high);
+            highEl.textContent = 'High: ' + high;
+          }
+          // show game over overlay briefly (draw below)
+          break;
+        } else if (!ob.passed && ob.x + ob.w < dino.x) {
+          ob.passed = true;
+          score += 10;
+        }
+      }
+
+      // speed up over time
+      distance += speed * (dt/16);
+      if (distance % 400 < 10) speed += 0.002 * (dt/16); // tiny bump
+      score = Math.floor(distance / 7);
+
+      // update UI
+      scoreEl.textContent = 'Score: ' + score;
+    }
+
+    // Render
+    // clear
+    ctx.clearRect(0,0, canvas.width/dpr, canvas.height/dpr);
+
+    // background hills (parallax)
+    ctx.fillStyle = '#efefef';
+    const hillOffset = -(distance/6)%200;
+    ctx.beginPath();
+    for (let x = hillOffset - 200; x < W + 200; x += 200) {
+      ctx.moveTo(x, GROUND_Y);
+      ctx.quadraticCurveTo(x + 60, GROUND_Y - 36, x + 120, GROUND_Y);
+    }
+    ctx.fill();
+
+    // ground and obstacles
+    drawGround();
+
+    // obstacles
+    for (let ob of obstacles) drawObstacle(ob);
+
+    // dino
+    drawDino(now);
+
+    // HUD text top-right
+    ctx.fillStyle = '#333';
+    ctx.font = '12px system-ui, Inter, Arial';
+    ctx.fillText('Score: ' + score, W - 120, 28);
+
+    // game over overlay
+    if (!playing) {
+      ctx.fillStyle = 'rgba(0,0,0,0.45)';
+      ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 26px system-ui, Inter, Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText('Game Over', W/2, H/2 - 8);
+      ctx.font = '14px system-ui, Inter, Arial';
+      ctx.fillText('Click / Press Space to restart', W/2, H/2 + 20);
+      ctx.textAlign = 'start';
+    }
+
+    // loop
+    if (running) requestAnimationFrame(loop);
+  }
+
+  // start first time
+  start();
+
+  // Safety: resume audio context (if any) on first user gesture - not used here but good practice
+  document.addEventListener('visibilitychange', () => {
+    // pause when tab hidden
+    if (document.hidden) running = false;
+  });
+
+  // expose small debug (not necessary)
+  window.__dino = {
+    start, getState: () => ({playing, running, speed, score, high})
+  };
+
+})();
+</script>
 </body>
 </html>
